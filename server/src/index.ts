@@ -1,6 +1,7 @@
 import path from "node:path";
 import express from "express";
 import { authMiddleware, oauthRouter } from "./oauth";
+import { projectsRouter } from "./projects";
 
 const app = express();
 app.set("trust proxy", true);
@@ -16,6 +17,8 @@ app.use("/api", authMiddleware);
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
 });
+
+app.use("/api/projects", projectsRouter);
 
 app.get("/{*path}", (_req, res) => {
   res.sendFile(path.join(__dirname, "../../client/dist/index.html"));

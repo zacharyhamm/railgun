@@ -1,0 +1,353 @@
+import { Router } from "express";
+import { railwayQuery } from "./railway";
+
+export const projectsRouter = Router();
+
+projectsRouter.get("/", async (req, res) => {
+  try {
+    const data = (await railwayQuery(
+      req.session?.accessToken ?? "",
+      `query {
+        externalWorkspaces {
+          id
+          name
+          projects { id name description }
+        }
+      }`,
+    )) as {
+      externalWorkspaces: {
+        id: string;
+        name: string;
+        projects: { id: string; name: string; description: string }[];
+      }[];
+    };
+    const projects = data.externalWorkspaces.flatMap((ws) =>
+      ws.projects.map((p) => ({ ...p, workspace: ws.name })),
+    );
+    res.json(projects);
+  } catch (err) {
+    console.error("Failed to fetch projects:", err);
+    res.status(502).json({ error: "Failed to fetch projects from Railway" });
+  }
+});
+
+projectsRouter.post("/:id/services", async (req, res) => {
+  try {
+    const { name, image, port } = req.body as {
+      name: string;
+      image: string;
+      port?: string;
+    };
+
+    if (!name || !image) {
+      res.status(400).json({ error: "name and image are required" });
+      return;
+    }
+
+    const variables: Record<string, string> = {};
+    if (port) {
+      variables.PORT = port;
+    }
+
+    const data = (await railwayQuery(
+      req.session?.accessToken ?? "",
+      `mutation serviceCreate($input: ServiceCreateInput!) {
+        serviceCreate(input: $input) { id name }
+      }`,
+      {
+        input: {
+          projectId: req.params.id,
+          name,
+          source: { image },
+          variables,
+        },
+      },
+    )) as { serviceCreate: { id: string; name: string } };
+
+    res.json(data.serviceCreate);
+  } catch (err) {
+    console.error("Failed to create service:", err);
+    res.status(502).json({ error: "Failed to create service on Railway" });
+  }
+});
+
+projectsRouter.get("/:id/services", async (req, res) => {
+  try {
+    const token = req.session?.accessToken ?? "";
+    const projectData = (await railwayQuery(
+      token,
+      `query project($id: String!) {
+        project(id: $id) {
+          id
+          name
+          services { edges { node { id name icon createdAt } } }
+          environments { edges { node { id name } } }
+        }
+      }`,
+      { id: req.params.id },
+    )) as {
+      project: {
+        id: string;
+        name: string;
+        services: {
+          edges: {
+            node: {
+              id: string;
+              name: string;
+              icon: string | null;
+              createdAt: string;
+            };
+          }[];
+        };
+        environments: { edges: { node: { id: string; name: string } }[] };
+      };
+    };
+
+    const services = projectData.project.services.edges.map((e) => e.node);
+    const environments = projectData.project.environments.edges.map(
+      (e) => e.node,
+    );
+    const envId = environments[0]?.id;
+
+    // Fetch service instance details and latest deployment per service
+    const servicesWithDetails = await Promise.all(
+      services.map(async (svc) => {
+        if (!envId) {
+          return { ...svc, latestDeployment: null, instance: null };
+        }
+        const [depResult, instanceResult] = await Promise.allSettled([
+          railwayQuery(
+            token,
+            `query deployments($input: DeploymentListInput!, $first: Int) {
+              deployments(input: $input, first: $first) {
+                edges { node { id status createdAt staticUrl meta } }
+              }
+            }`,
+            {
+              input: {
+                projectId: req.params.id,
+                serviceId: svc.id,
+                environmentId: envId,
+              },
+              first: 1,
+            },
+          ),
+          railwayQuery(
+            token,
+            `query serviceInstance($serviceId: String!, $environmentId: String!) {
+              serviceInstance(serviceId: $serviceId, environmentId: $environmentId) {
+                region
+                numReplicas
+                restartPolicyType
+                restartPolicyMaxRetries
+                startCommand
+                healthcheckPath
+              }
+            }`,
+            { serviceId: svc.id, environmentId: envId },
+          ),
+        ]);
+
+        const depData =
+          depResult.status === "fulfilled" ? depResult.value : null;
+        const instData =
+          instanceResult.status === "fulfilled" ? instanceResult.value : null;
+
+        // const depEdges = (depData as any)?.deployments?.edges;
+        // if (depEdges?.[0]?.node?.meta) {
+        //   console.log(
+        //     `[${svc.name}] deployment.meta:`,
+        //     JSON.stringify(depEdges[0].node.meta, null, 2),
+        //   );
+        // }
+
+        const latestNode =
+          (
+            depData as {
+              deployments: {
+                edges: {
+                  node: {
+                    id: string;
+                    status: string;
+                    createdAt: string;
+                    staticUrl: string | null;
+                    meta: Record<string, unknown> | null;
+                  };
+                }[];
+              };
+            } | null
+          )?.deployments.edges[0]?.node ?? null;
+
+        const latest = latestNode
+          ? {
+              id: latestNode.id,
+              status: latestNode.status,
+              createdAt: latestNode.createdAt,
+              staticUrl: latestNode.staticUrl,
+              image: (latestNode.meta?.image as string) ?? null,
+              repo: (latestNode.meta?.repo as string) ?? null,
+            }
+          : null;
+
+        const instance =
+          (
+            instData as {
+              serviceInstance: {
+                region: string | null;
+                numReplicas: number;
+                restartPolicyType: string;
+                restartPolicyMaxRetries: number;
+                startCommand: string | null;
+                healthcheckPath: string | null;
+              };
+            } | null
+          )?.serviceInstance ?? null;
+
+        return { ...svc, latestDeployment: latest, instance };
+      }),
+    );
+
+    res.json({
+      ...projectData.project,
+      services: servicesWithDetails,
+      environments,
+    });
+  } catch (err) {
+    console.error("Failed to fetch project services:", err);
+    res.status(502).json({ error: "Failed to fetch project from Railway" });
+  }
+});
+
+projectsRouter.get("/:projectId/services/:serviceId", async (req, res) => {
+  const token = req.session?.accessToken ?? "";
+  const { projectId, serviceId } = req.params;
+  const environmentId = req.query.environmentId as string | undefined;
+
+  if (!environmentId) {
+    res.status(400).json({ error: "environmentId query parameter required" });
+    return;
+  }
+
+  try {
+    const [instanceData, depData] = await Promise.all([
+      railwayQuery(
+        token,
+        `query serviceInstance($serviceId: String!, $environmentId: String!) {
+            serviceInstance(serviceId: $serviceId, environmentId: $environmentId) {
+              region
+              numReplicas
+              restartPolicyType
+              restartPolicyMaxRetries
+              startCommand
+              healthcheckPath
+            }
+          }`,
+        { serviceId, environmentId },
+      ),
+      railwayQuery(
+        token,
+        `query deployments($input: DeploymentListInput!, $first: Int) {
+            deployments(input: $input, first: $first) {
+              edges { node { id status createdAt staticUrl meta } }
+            }
+          }`,
+        {
+          input: { projectId, serviceId, environmentId },
+          first: 1,
+        },
+      ),
+    ]);
+
+    const instance =
+      (
+        instanceData as {
+          serviceInstance: {
+            region: string | null;
+            numReplicas: number;
+            restartPolicyType: string;
+            restartPolicyMaxRetries: number;
+            startCommand: string | null;
+            healthcheckPath: string | null;
+          };
+        }
+      )?.serviceInstance ?? null;
+
+    const latestNode =
+      (
+        depData as {
+          deployments: {
+            edges: {
+              node: {
+                id: string;
+                status: string;
+                createdAt: string;
+                staticUrl: string | null;
+                meta: Record<string, unknown> | null;
+              };
+            }[];
+          };
+        }
+      )?.deployments.edges[0]?.node ?? null;
+
+    const latestDeployment = latestNode
+      ? {
+          id: latestNode.id,
+          status: latestNode.status,
+          createdAt: latestNode.createdAt,
+          staticUrl: latestNode.staticUrl,
+          image: (latestNode.meta?.image as string) ?? null,
+          repo: (latestNode.meta?.repo as string) ?? null,
+        }
+      : null;
+
+    res.json({ instance, latestDeployment });
+  } catch (err) {
+    console.error("Failed to fetch service status:", err);
+    res
+      .status(502)
+      .json({ error: "Failed to fetch service status from Railway" });
+  }
+});
+
+projectsRouter.post(
+  "/:projectId/services/:serviceId/deploy",
+  async (req, res) => {
+    try {
+      await railwayQuery(
+        req.session?.accessToken ?? "",
+        `mutation serviceInstanceRedeploy($serviceId: String!, $environmentId: String!) {
+          serviceInstanceRedeploy(serviceId: $serviceId, environmentId: $environmentId)
+        }`,
+        {
+          serviceId: req.params.serviceId,
+          environmentId: req.body.environmentId,
+        },
+      );
+      res.json({ ok: true });
+    } catch (err) {
+      console.error("Failed to deploy service:", err);
+      res.status(502).json({ error: "Failed to deploy service on Railway" });
+    }
+  },
+);
+
+projectsRouter.delete(
+  "/:projectId/deployments/:deploymentId",
+  async (req, res) => {
+    try {
+      await railwayQuery(
+        req.session?.accessToken ?? "",
+        `mutation deploymentRemove($id: String!) {
+        deploymentRemove(id: $id)
+      }`,
+        { id: req.params.deploymentId },
+      );
+      res.json({ ok: true });
+    } catch (err) {
+      console.error("Failed to remove deployment:", err);
+      res
+        .status(502)
+        .json({ error: "Failed to remove deployment from Railway" });
+    }
+  },
+);
