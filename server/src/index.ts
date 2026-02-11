@@ -1,12 +1,17 @@
 import path from "node:path";
 import express from "express";
+import { authMiddleware, oauthRouter } from "./oauth";
 
 const app = express();
+app.set("trust proxy", true);
 const port = process.env.PORT || 3000;
 
 app.use(express.json());
 
 app.use(express.static(path.join(__dirname, "../../client/dist")));
+
+app.use("/oauth", oauthRouter);
+app.use("/api", authMiddleware);
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
