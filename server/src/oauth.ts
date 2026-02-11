@@ -5,9 +5,17 @@ import {
   type Response,
   Router,
 } from "express";
+import redis from "./redis";
 
 const OAUTH_CLIENT_ID = process.env.OAUTH_CLIENT_ID ?? "";
 const OAUTH_CLIENT_SECRET = process.env.OAUTH_CLIENT_SECRET ?? "";
+
+const SESSION_TTL = 86400; // 24 hours in seconds
+const STATE_TTL = 600; // 10 minutes in seconds
+
+const OAUTH_AUTH_URL = "https://backboard.railway.com/oauth/auth";
+const OAUTH_TOKEN_URL = "https://backboard.railway.com/oauth/token";
+const OAUTH_USERINFO_URL = "https://backboard.railway.com/oauth/me";
 
 export interface User {
   id: string;
@@ -29,24 +37,11 @@ declare global {
   }
 }
 
-export const sessions = new Map<string, Session>();
-const states = new Map<string, number>();
-
-// Clean up expired states (older than 10 minutes) periodically
-setInterval(() => {
-  const now = Date.now();
-  for (const [state, timestamp] of states) {
-    if (now - timestamp > 10 * 60 * 1000) {
-      states.delete(state);
-    }
-  }
-}, 60 * 1000);
-
 export const oauthRouter = Router();
 
-oauthRouter.get("/authorize", (req, res) => {
+oauthRouter.get("/authorize", async (req, res) => {
   const state = crypto.randomUUID();
-  states.set(state, Date.now());
+  await redis.set(`oauth-state:${state}`, "1", "EX", STATE_TTL);
 
   const redirectUri = `${req.protocol}://${req.get("host")}/oauth/callback`;
   console.log(redirectUri);
@@ -60,18 +55,17 @@ oauthRouter.get("/authorize", (req, res) => {
     state,
   });
 
-  res.redirect(`https://backboard.railway.com/oauth/auth?${params}`);
+  res.redirect(`${OAUTH_AUTH_URL}?${params}`);
 });
 
 oauthRouter.get("/callback", async (req, res) => {
   try {
     const { code, state } = req.query;
 
-    if (!state || !states.has(state as string)) {
+    if (!state || (await redis.del(`oauth-state:${state as string}`)) === 0) {
       res.status(400).send("Invalid or missing state parameter");
       return;
     }
-    states.delete(state as string);
 
     if (!code) {
       res.status(400).send("Missing authorization code");
@@ -81,7 +75,7 @@ oauthRouter.get("/callback", async (req, res) => {
     const redirectUri = `${req.protocol}://${req.get("host")}/oauth/callback`;
 
     // Exchange code for tokens
-    const tokenRes = await fetch("https://backboard.railway.com/oauth/token", {
+    const tokenRes = await fetch(OAUTH_TOKEN_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
@@ -105,7 +99,7 @@ oauthRouter.get("/callback", async (req, res) => {
     };
 
     // Fetch user info
-    const userRes = await fetch("https://backboard.railway.com/oauth/me", {
+    const userRes = await fetch(OAUTH_USERINFO_URL, {
       headers: {
         Authorization: `Bearer ${tokenData.access_token}`,
       },
@@ -120,11 +114,17 @@ oauthRouter.get("/callback", async (req, res) => {
 
     // Create session
     const sessionToken = crypto.randomUUID();
-    sessions.set(sessionToken, {
+    const session: Session = {
       user: userInfo,
       accessToken: tokenData.access_token,
       refreshToken: tokenData.refresh_token,
-    });
+    };
+    await redis.set(
+      `session:${sessionToken}`,
+      JSON.stringify(session),
+      "EX",
+      SESSION_TTL,
+    );
 
     res.redirect(`/?token=${sessionToken}`);
   } catch (err) {
@@ -133,15 +133,15 @@ oauthRouter.get("/callback", async (req, res) => {
   }
 });
 
-oauthRouter.post("/logout", (req, res) => {
+oauthRouter.post("/logout", async (req, res) => {
   const authHeader = req.get("Authorization");
   if (authHeader?.startsWith("Bearer ")) {
-    sessions.delete(authHeader.slice(7));
+    await redis.del(`session:${authHeader.slice(7)}`);
   }
   res.json({ ok: true });
 });
 
-export function authMiddleware(
+export async function authMiddleware(
   req: Request,
   res: Response,
   next: NextFunction,
@@ -153,12 +153,12 @@ export function authMiddleware(
   }
 
   const token = authHeader.slice(7);
-  const session = sessions.get(token);
-  if (!session) {
+  const data = await redis.get(`session:${token}`);
+  if (!data) {
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
 
-  req.session = session;
+  req.session = JSON.parse(data) as Session;
   next();
 }
