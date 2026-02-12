@@ -122,8 +122,6 @@ oauthRouter.get("/callback", async (req, res) => {
     await redis.set(
       `session:${sessionToken}`,
       JSON.stringify(session),
-      "EX",
-      SESSION_TTL,
     );
 
     res.redirect(`/?token=${sessionToken}`);
