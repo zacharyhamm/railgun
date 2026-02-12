@@ -105,89 +105,46 @@ projectsRouter.get("/:id/services", async (req, res) => {
     );
     const envId = environments[0]?.id;
 
-    // Fetch service instance details and latest deployment per service
+    // Fetch service instance details per service
     const servicesWithDetails = await Promise.all(
       services.map(async (svc) => {
         if (!envId) {
-          return { ...svc, latestDeployment: null, instance: null };
+          return { ...svc, latestDeployment: null };
         }
-        const [depResult, instanceResult] = await Promise.allSettled([
-          railwayQuery(
-            token,
-            `query deployments($input: DeploymentListInput!, $first: Int) {
-              deployments(input: $input, first: $first) {
-                edges { node { id status createdAt staticUrl meta } }
+        const result = await railwayQuery(
+          token,
+          `query serviceInstance($serviceId: String!, $environmentId: String!) {
+            serviceInstance(serviceId: $serviceId, environmentId: $environmentId) {
+              id
+              serviceName
+              latestDeployment {
+                id
+                status
+                createdAt
               }
-            }`,
-            {
-              input: {
-                projectId: req.params.id,
-                serviceId: svc.id,
-                environmentId: envId,
-              },
-              first: 1,
-            },
-          ),
-          railwayQuery(
-            token,
-            `query serviceInstance($serviceId: String!, $environmentId: String!) {
-              serviceInstance(serviceId: $serviceId, environmentId: $environmentId) {
-                region
-                numReplicas
-                startCommand
-                healthcheckPath
-              }
-            }`,
-            { serviceId: svc.id, environmentId: envId },
-          ),
-        ]);
-
-        const depData =
-          depResult.status === "fulfilled" ? depResult.value : null;
-        const instData =
-          instanceResult.status === "fulfilled" ? instanceResult.value : null;
-
-        const latestNode =
-          (
-            depData as {
-              deployments: {
-                edges: {
-                  node: {
-                    id: string;
-                    status: string;
-                    createdAt: string;
-                    staticUrl: string | null;
-                    meta: Record<string, unknown> | null;
-                  };
-                }[];
-              };
-            } | null
-          )?.deployments.edges[0]?.node ?? null;
-
-        const latest = latestNode
-          ? {
-              id: latestNode.id,
-              status: latestNode.status,
-              createdAt: latestNode.createdAt,
-              staticUrl: latestNode.staticUrl,
-              image: (latestNode.meta?.image as string) ?? null,
-              repo: (latestNode.meta?.repo as string) ?? null,
             }
-          : null;
+          }`,
+          { serviceId: svc.id, environmentId: envId },
+        );
 
-        const instance =
-          (
-            instData as {
-              serviceInstance: {
-                region: string | null;
-                numReplicas: number;
-                startCommand: string | null;
-                healthcheckPath: string | null;
-              };
-            } | null
-          )?.serviceInstance ?? null;
+        const instance = (
+          result as {
+            serviceInstance: {
+              id: string;
+              serviceName: string;
+              latestDeployment: {
+                id: string;
+                status: string;
+                createdAt: string;
+              } | null;
+            } | null;
+          }
+        )?.serviceInstance;
 
-        return { ...svc, latestDeployment: latest, instance };
+        return {
+          ...svc,
+          latestDeployment: instance?.latestDeployment ?? null,
+        };
       }),
     );
 
