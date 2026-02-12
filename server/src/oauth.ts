@@ -10,7 +10,6 @@ import redis from "./redis";
 const OAUTH_CLIENT_ID = process.env.OAUTH_CLIENT_ID ?? "";
 const OAUTH_CLIENT_SECRET = process.env.OAUTH_CLIENT_SECRET ?? "";
 
-const SESSION_TTL = 86400; // 24 hours in seconds
 const STATE_TTL = 600; // 10 minutes in seconds
 
 const OAUTH_AUTH_URL = "https://backboard.railway.com/oauth/auth";
@@ -119,10 +118,7 @@ oauthRouter.get("/callback", async (req, res) => {
       accessToken: tokenData.access_token,
       refreshToken: tokenData.refresh_token,
     };
-    await redis.set(
-      `session:${sessionToken}`,
-      JSON.stringify(session),
-    );
+    await redis.set(`session:${sessionToken}`, JSON.stringify(session));
 
     res.redirect(`/?token=${sessionToken}`);
   } catch (err) {

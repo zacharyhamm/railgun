@@ -1,9 +1,9 @@
 import { Router } from "express";
 import { railwayQuery } from "./railway";
 
-export const projectsRouter = Router();
+export const router = Router();
 
-projectsRouter.get("/", async (req, res) => {
+router.get("/", async (req, res) => {
   try {
     const data = (await railwayQuery(
       req.session?.accessToken ?? "",
@@ -31,7 +31,7 @@ projectsRouter.get("/", async (req, res) => {
   }
 });
 
-projectsRouter.post("/:id/services", async (req, res) => {
+router.post("/:id/services", async (req, res) => {
   try {
     const { name, image } = req.body as {
       name: string;
@@ -67,7 +67,7 @@ projectsRouter.post("/:id/services", async (req, res) => {
   }
 });
 
-projectsRouter.get("/:id/services", async (req, res) => {
+router.get("/:id/services", async (req, res) => {
   try {
     const token = req.session?.accessToken ?? "";
     const projectData = (await railwayQuery(
@@ -159,7 +159,7 @@ projectsRouter.get("/:id/services", async (req, res) => {
   }
 });
 
-projectsRouter.get("/:projectId/services/:serviceId", async (req, res) => {
+router.get("/:projectId/services/:serviceId", async (req, res) => {
   const token = req.session?.accessToken ?? "";
   const { projectId, serviceId } = req.params;
   const environmentId = req.query.environmentId as string | undefined;
@@ -246,45 +246,37 @@ projectsRouter.get("/:projectId/services/:serviceId", async (req, res) => {
   }
 });
 
-projectsRouter.post(
-  "/:projectId/services/:serviceId/deploy",
-  async (req, res) => {
-    try {
-      await railwayQuery(
-        req.session?.accessToken ?? "",
-        `mutation serviceInstanceDeployV2($serviceId: String!, $environmentId: String!) {
+router.post("/:projectId/services/:serviceId/deploy", async (req, res) => {
+  try {
+    await railwayQuery(
+      req.session?.accessToken ?? "",
+      `mutation serviceInstanceDeployV2($serviceId: String!, $environmentId: String!) {
           serviceInstanceDeployV2(serviceId: $serviceId, environmentId: $environmentId)
         }`,
-        {
-          serviceId: req.params.serviceId,
-          environmentId: req.body.environmentId,
-        },
-      );
-      res.json({ ok: true });
-    } catch (err) {
-      console.error("Failed to deploy service:", err);
-      res.status(502).json({ error: "Failed to deploy service on Railway" });
-    }
-  },
-);
+      {
+        serviceId: req.params.serviceId,
+        environmentId: req.body.environmentId,
+      },
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Failed to deploy service:", err);
+    res.status(502).json({ error: "Failed to deploy service on Railway" });
+  }
+});
 
-projectsRouter.delete(
-  "/:projectId/deployments/:deploymentId",
-  async (req, res) => {
-    try {
-      await railwayQuery(
-        req.session?.accessToken ?? "",
-        `mutation deploymentRemove($id: String!) {
+router.delete("/:projectId/deployments/:deploymentId", async (req, res) => {
+  try {
+    await railwayQuery(
+      req.session?.accessToken ?? "",
+      `mutation deploymentRemove($id: String!) {
         deploymentRemove(id: $id)
       }`,
-        { id: req.params.deploymentId },
-      );
-      res.json({ ok: true });
-    } catch (err) {
-      console.error("Failed to remove deployment:", err);
-      res
-        .status(502)
-        .json({ error: "Failed to remove deployment from Railway" });
-    }
-  },
-);
+      { id: req.params.deploymentId },
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Failed to remove deployment:", err);
+    res.status(502).json({ error: "Failed to remove deployment from Railway" });
+  }
+});
