@@ -33,10 +33,10 @@ projectsRouter.get("/", async (req, res) => {
 
 projectsRouter.post("/:id/services", async (req, res) => {
   try {
-    const { name, image, port } = req.body as {
+    const { name, image } = req.body as {
       name: string;
       image: string;
-      port?: string;
+      environmentId?: string;
     };
 
     if (!name || !image) {
@@ -44,13 +44,10 @@ projectsRouter.post("/:id/services", async (req, res) => {
       return;
     }
 
-    const variables: Record<string, string> = {};
-    if (port) {
-      variables.PORT = port;
-    }
+    const token = req.session?.accessToken ?? "";
 
     const data = (await railwayQuery(
-      req.session?.accessToken ?? "",
+      token,
       `mutation serviceCreate($input: ServiceCreateInput!) {
         serviceCreate(input: $input) { id name }
       }`,
@@ -59,7 +56,6 @@ projectsRouter.post("/:id/services", async (req, res) => {
           projectId: req.params.id,
           name,
           source: { image },
-          variables,
         },
       },
     )) as { serviceCreate: { id: string; name: string } };
@@ -138,8 +134,6 @@ projectsRouter.get("/:id/services", async (req, res) => {
               serviceInstance(serviceId: $serviceId, environmentId: $environmentId) {
                 region
                 numReplicas
-                restartPolicyType
-                restartPolicyMaxRetries
                 startCommand
                 healthcheckPath
               }
@@ -152,14 +146,6 @@ projectsRouter.get("/:id/services", async (req, res) => {
           depResult.status === "fulfilled" ? depResult.value : null;
         const instData =
           instanceResult.status === "fulfilled" ? instanceResult.value : null;
-
-        // const depEdges = (depData as any)?.deployments?.edges;
-        // if (depEdges?.[0]?.node?.meta) {
-        //   console.log(
-        //     `[${svc.name}] deployment.meta:`,
-        //     JSON.stringify(depEdges[0].node.meta, null, 2),
-        //   );
-        // }
 
         const latestNode =
           (
@@ -195,8 +181,6 @@ projectsRouter.get("/:id/services", async (req, res) => {
               serviceInstance: {
                 region: string | null;
                 numReplicas: number;
-                restartPolicyType: string;
-                restartPolicyMaxRetries: number;
                 startCommand: string | null;
                 healthcheckPath: string | null;
               };
@@ -236,8 +220,6 @@ projectsRouter.get("/:projectId/services/:serviceId", async (req, res) => {
             serviceInstance(serviceId: $serviceId, environmentId: $environmentId) {
               region
               numReplicas
-              restartPolicyType
-              restartPolicyMaxRetries
               startCommand
               healthcheckPath
             }
@@ -264,8 +246,6 @@ projectsRouter.get("/:projectId/services/:serviceId", async (req, res) => {
           serviceInstance: {
             region: string | null;
             numReplicas: number;
-            restartPolicyType: string;
-            restartPolicyMaxRetries: number;
             startCommand: string | null;
             healthcheckPath: string | null;
           };
@@ -315,8 +295,8 @@ projectsRouter.post(
     try {
       await railwayQuery(
         req.session?.accessToken ?? "",
-        `mutation serviceInstanceRedeploy($serviceId: String!, $environmentId: String!) {
-          serviceInstanceRedeploy(serviceId: $serviceId, environmentId: $environmentId)
+        `mutation serviceInstanceDeployV2($serviceId: String!, $environmentId: String!) {
+          serviceInstanceDeployV2(serviceId: $serviceId, environmentId: $environmentId)
         }`,
         {
           serviceId: req.params.serviceId,
